@@ -1,0 +1,43 @@
+# Windows
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+*.suo
+*.user
+
+# WoW Addon — Saved Variables
+SavedVariables/
+*.lua.bak
+
+# Build / packaging
+*.zip
+dist/
+build/
+release/
+
+# Node (if using any tooling)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Temp
+*.tmp
+*.log
+*.swp
+*~
+
+# Claude AI
+.claude/
+.claude.json
