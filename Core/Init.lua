@@ -12,15 +12,19 @@ frame:SetScript("OnEvent", function(self, event, isLogin, isReload)
     local inInstance, instanceType = IsInInstance()
 
     if inInstance and (instanceType == "raid" or instanceType == "party") then
-        if NovAuras.modules["BossTimers"] then
-            NovAuras.modules["BossTimers"]:Load()
+        local mod = NovAuras.modules["BossTimers"]
+        if mod and not mod._loaded then
+            mod:Load()
+            mod._loaded = true
         end
     end
 
-    local zone = C_PvP.GetZonePvpInfo and C_PvP.GetZonePvpInfo()
-    if zone == "arena" or zone == "battleground" then
-        if NovAuras.modules["PvPTracker"] then
-            NovAuras.modules["PvPTracker"]:Load()
+    local pvpType = C_PvP.GetZonePvpInfo and C_PvP.GetZonePvpInfo()
+    if pvpType == "arena" or pvpType == "battleground" then
+        local mod = NovAuras.modules["PvPTracker"]
+        if mod and not mod._loaded then
+            mod:Load()
+            mod._loaded = true
         end
     end
 end)
