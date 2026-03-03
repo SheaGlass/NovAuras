@@ -50,7 +50,8 @@ _G.CreateFrame = function(frameType, name, parent)
     return f
 end
 
-dofile("Core/DisplayEngine.lua")
+local testDir = debug.getinfo(1, "S").source:match("^@(.+[/\\])")
+dofile(testDir .. "../Core/DisplayEngine.lua")
 
 describe("BaseRegion", function()
     it("creates with correct region type", function()
@@ -81,5 +82,14 @@ describe("BaseRegion", function()
         r:SetSize(64, 64)
         assert.equals(64, r.frame._width)
         assert.equals(64, r.frame._height)
+    end)
+
+    it("SetPosition records anchor point on frame", function()
+        local r = NovAuras.DisplayEngine.NewRegion("Icon")
+        r:SetPosition(100, -50)
+        local pt = r.frame._points[1]
+        assert.equals("CENTER", pt[1])
+        assert.equals(100, pt[4])
+        assert.equals(-50, pt[5])
     end)
 end)
