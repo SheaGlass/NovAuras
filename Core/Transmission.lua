@@ -1,0 +1,1 @@
+-- NovAuras: Transmission stub

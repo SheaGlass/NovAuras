@@ -1,0 +1,24 @@
+## Interface: 120100
+## Title: NovAuras
+## Notes: WeakAuras rebuilt for Midnight
+## Version: 0.1.0
+## Author: Shea
+## DefaultState: enabled
+## SavedVariables: NovAurasDB
+
+# Libraries
+Libs\AceGUI-3.0\AceGUI-3.0.xml
+
+# Core (always loads)
+Core\Init.lua
+Core\DisplayEngine.lua
+Core\TriggerSystem.lua
+Core\ConditionSystem.lua
+Core\AnimationSystem.lua
+Core\ConfigGUI.lua
+Core\Transmission.lua
+
+# Modules (loaded on demand by Init.lua)
+Modules\PvPSpellDB.lua
+Modules\PvPTracker.lua
+Modules\BossTimers.lua

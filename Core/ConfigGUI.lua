@@ -1,0 +1,1 @@
+-- NovAuras: ConfigGUI stub
