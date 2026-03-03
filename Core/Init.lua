@@ -35,5 +35,7 @@ end
 SLASH_NOVDEBUG1 = "/novdebug"
 SlashCmdList["NOVDEBUG"] = function()
     print("NovAuras v" .. NovAuras.version .. " loaded.")
-    print("Modules:", #NovAuras.modules)
+    local count = 0
+    for _ in pairs(NovAuras.modules) do count = count + 1 end
+    print("Modules:", count)
 end
