@@ -1,28 +1,70 @@
 -- Modules/PvPTracker.lua
--- Tracks enemy PvP cooldowns via inference (never reads Secret Values).
+-- Tracks enemy PvP cooldowns via inference.
+-- Never reads Secret Values — all enemy aura/cooldown data is opaque in Midnight.
 NovAuras = NovAuras or {}
 NovAuras.PvPTracker = {}
 
-local profiles = {}  -- [unitID] = { spec, cooldowns={[spellID]=duration} }
-local timers   = {}  -- [unitID.."_"..spellID] = { expiry, startTime, duration, spellID, unitID }
+-- profiles[guid] = { spec, cooldowns={[spellID]=duration} }
+-- timers[guid.."_"..spellID] = { expiry, startTime, duration, spellID, guid, uncertain }
+local profiles = {}
+local timers   = {}
 
-local function GetOrCreateProfile(unitID)
-    if not profiles[unitID] then
-        profiles[unitID] = { spec = nil, cooldowns = {} }
-    end
-    return profiles[unitID]
+-- ============================================================
+-- Internal helpers
+-- ============================================================
+
+local function SafeUnit(fn, ...)
+    local ok, result = pcall(fn, ...)
+    if not ok then return nil end
+    return NovAuras.SafeGetValue(result)
 end
 
-function NovAuras.PvPTracker.HandleCast(unitID, spellID)
+local function GetGUID(unit)
+    return SafeUnit(UnitGUID, unit)
+end
+
+local function IsEnemy(unit)
+    return SafeUnit(UnitIsEnemy, "player", unit) == true
+end
+
+local function IsSelf(unit)
+    return SafeUnit(UnitIsUnit, unit, "player") == true
+end
+
+local function GetOrCreateProfile(guid)
+    if not profiles[guid] then
+        profiles[guid] = { spec = nil, cooldowns = {} }
+    end
+    return profiles[guid]
+end
+
+local function TimerKey(guid, spellID)
+    return guid .. "_" .. spellID
+end
+
+-- ============================================================
+-- Public API
+-- ============================================================
+
+function NovAuras.PvPTracker.HandleCast(unitOrGUID, spellID, useAsGUID)
     local entry = NovAuras.PvPSpellDB.Get(spellID)
     if not entry then return end
 
-    local profile = GetOrCreateProfile(unitID)
-    local now = GetTime()
-    local key = unitID .. "_" .. spellID
+    -- Accept either a unit token or a pre-resolved GUID
+    local guid
+    if useAsGUID then
+        guid = unitOrGUID
+    else
+        guid = GetGUID(unitOrGUID)
+    end
+    if not guid then return end
 
-    -- Self-calibrate: if the spell fires while our timer still has time left,
-    -- the real cooldown is shorter than we assumed — update it.
+    local profile = GetOrCreateProfile(guid)
+    local now = GetTime()
+    local key = TimerKey(guid, spellID)
+
+    -- Self-calibrate: if the spell fires while our timer still has time,
+    -- the real cooldown is shorter — update the profile's learned duration.
     if timers[key] and now < timers[key].expiry then
         local realDuration = now - timers[key].startTime
         if realDuration < timers[key].duration then
@@ -30,50 +72,143 @@ function NovAuras.PvPTracker.HandleCast(unitID, spellID)
         end
     end
 
-    -- Infer spec from the first spec-specific spell we see
+    -- Spec inference from first spec-specific spell observed
     if not profile.spec then
         profile.spec = NovAuras.PvPSpellDB.SpecFromSpell(spellID)
     end
 
-    -- Pick the best known duration (calibrated > spec-based > base)
     local duration = profile.cooldowns[spellID]
         or NovAuras.PvPSpellDB.GetDuration(spellID, profile.spec)
 
     timers[key] = {
         spellID   = spellID,
-        unitID    = unitID,
+        guid      = guid,
         startTime = now,
         duration  = duration,
         expiry    = now + duration,
+        uncertain = false,
     }
 end
 
-function NovAuras.PvPTracker.GetTimer(unitID, spellID)
-    return timers[unitID .. "_" .. spellID]
+-- Called when UNIT_AURA fires for a tracked enemy unit.
+-- Marks all active timers for that unit as uncertain since aura state changed
+-- but we can't read what changed (Secret Value).
+function NovAuras.PvPTracker.HandleAuraChange(guid)
+    local now = GetTime()
+    for key, timer in pairs(timers) do
+        if timer.guid == guid and now < timer.expiry then
+            timer.uncertain = true
+        end
+    end
 end
 
-function NovAuras.PvPTracker.GetProfile(unitID)
-    return profiles[unitID]
+-- Wipe all data for a specific GUID (enemy left arena, new match, etc.)
+function NovAuras.PvPTracker.ClearUnit(guid)
+    profiles[guid] = nil
+    for key, timer in pairs(timers) do
+        if timer.guid == guid then
+            timers[key] = nil
+        end
+    end
+end
+
+-- Wipe everything — called on zone change.
+function NovAuras.PvPTracker.Reset()
+    profiles = {}
+    timers   = {}
+end
+
+function NovAuras.PvPTracker.GetTimer(unitOrGUID, spellID, useAsGUID)
+    local guid
+    if useAsGUID then
+        guid = unitOrGUID
+    else
+        guid = GetGUID(unitOrGUID) or unitOrGUID
+    end
+    return timers[TimerKey(guid, spellID)]
+end
+
+function NovAuras.PvPTracker.GetProfile(unitOrGUID, useAsGUID)
+    local guid
+    if useAsGUID then
+        guid = unitOrGUID
+    else
+        guid = GetGUID(unitOrGUID) or unitOrGUID
+    end
+    return profiles[guid]
 end
 
 function NovAuras.PvPTracker.GetAllTimers()
     return timers
 end
 
--- Module lifecycle — called by Init when entering PvP content
+-- ============================================================
+-- Module lifecycle
+-- ============================================================
+
 function NovAuras.PvPTracker:Load()
-    -- Hook into TriggerSystem for enemy casts
+    -- --------------------------------------------------------
+    -- Event: enemy cast completed
+    -- UNIT_SPELLCAST_SUCCEEDED(unit, castGUID, spellID)
+    -- Fires for arena1-5 unit tokens in Midnight.
+    -- --------------------------------------------------------
     NovAuras.TriggerSystem.RegisterEventTrigger(
         "UNIT_SPELLCAST_SUCCEEDED",
         function(unit, _, spellID)
-            if unit and not UnitIsUnit(unit, "player") then
-                local unitID = UnitGUID(unit) or unit
-                NovAuras.PvPTracker.HandleCast(unitID, spellID)
+            if not unit or IsSelf(unit) then return end
+            if not IsEnemy(unit) then return end
+            local guid = GetGUID(unit)
+            if not guid then return end
+            NovAuras.PvPTracker.HandleCast(guid, spellID, true)
+        end
+    )
+
+    -- --------------------------------------------------------
+    -- Event: enemy unit aura state changed
+    -- UNIT_AURA(unit) fires in Midnight for arena units.
+    -- Aura values are Secret Values — we only note that something changed.
+    -- --------------------------------------------------------
+    NovAuras.TriggerSystem.ListenForEvent("UNIT_AURA")
+    NovAuras.TriggerSystem.RegisterEventTrigger(
+        "UNIT_AURA",
+        function(unit)
+            if not unit or IsSelf(unit) then return end
+            if not IsEnemy(unit) then return end
+            local guid = GetGUID(unit)
+            if not guid then return end
+            NovAuras.PvPTracker.HandleAuraChange(guid)
+        end
+    )
+
+    -- --------------------------------------------------------
+    -- Event: arena opponent slot updated (enemy joins/leaves)
+    -- ARENA_OPPONENT_UPDATE(unit, updateReason)
+    -- --------------------------------------------------------
+    NovAuras.TriggerSystem.ListenForEvent("ARENA_OPPONENT_UPDATE")
+    NovAuras.TriggerSystem.RegisterEventTrigger(
+        "ARENA_OPPONENT_UPDATE",
+        function(unit, updateReason)
+            if not unit then return end
+            local guid = GetGUID(unit)
+            if guid then
+                NovAuras.PvPTracker.ClearUnit(guid)
             end
         end
     )
 
+    -- --------------------------------------------------------
+    -- Event: zone change — wipe stale data from previous match
+    -- --------------------------------------------------------
+    NovAuras.TriggerSystem.RegisterEventTrigger(
+        "PLAYER_ENTERING_WORLD",
+        function()
+            NovAuras.PvPTracker.Reset()
+        end
+    )
+
+    -- --------------------------------------------------------
     -- Display frame (draggable, top-right)
+    -- --------------------------------------------------------
     local displayFrame = CreateFrame("Frame", "NovAurasPvPFrame", UIParent)
     displayFrame:SetSize(200, 400)
     displayFrame:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -10, -200)
@@ -94,7 +229,7 @@ function NovAuras.PvPTracker:Load()
         return icon
     end
 
-    -- Refresh display at ~10 fps
+    -- Refresh at ~10 fps
     local refreshFrame = CreateFrame("Frame")
     refreshFrame:SetScript("OnUpdate", function(self, elapsed)
         self.elapsed = (self.elapsed or 0) + elapsed
@@ -105,7 +240,7 @@ function NovAuras.PvPTracker:Load()
 
         local now = GetTime()
         local yOffset = 0
-        for key, timer in pairs(NovAuras.PvPTracker.GetAllTimers()) do
+        for _, timer in pairs(NovAuras.PvPTracker.GetAllTimers()) do
             if now < timer.expiry then
                 local entry = NovAuras.PvPSpellDB.Get(timer.spellID)
                 if entry then
@@ -113,6 +248,9 @@ function NovAuras.PvPTracker:Load()
                     icon:SetPosition(0, yOffset)
                     icon:SetSpellTexture(entry.icon or 134400)
                     icon:SetTimer(timer.expiry)
+                    -- Uncertain timers (aura state changed, may have expired early)
+                    -- show at 50% alpha as a visual hint
+                    icon.frame:SetAlpha(timer.uncertain and 0.5 or 1.0)
                     icon:Show()
                     yOffset = yOffset - 36
                 end
